@@ -8,7 +8,7 @@
 ## X-Curse-Project-ID: 1818471
 ## X-Wago-ID: O67bV0N3
 ## SavedVariables: SpikeSpotterDB
-## IconTexture: Interface\Icons\Spell_Nature_TimeStop
+## IconTexture: Interface\AddOns\SpikeSpotter\Icons\minimap
 ## AddonCompartmentFunc: SpikeSpotter_OnCompartmentClick
 
 Libs\LibStub\LibStub.lua
