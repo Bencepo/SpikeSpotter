@@ -5,6 +5,8 @@
 ## Version: @project-version@
 ## X-Website: https://bencepo.github.io/spikespotter/
 ## X-License: All Rights Reserved
+## X-Curse-Project-ID: 1818471
+## X-Wago-ID: O67bV0N3
 ## SavedVariables: SpikeSpotterDB
 ## IconTexture: Interface\Icons\Spell_Nature_TimeStop
 ## AddonCompartmentFunc: SpikeSpotter_OnCompartmentClick
