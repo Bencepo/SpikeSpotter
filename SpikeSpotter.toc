@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: SpikeSpotter
+## Notes: Finds the addons behind short FPS drops: ranks them by the time they took in each spike, with a copyable report.
+## Author: Bencepo
+## Version: @project-version@
+## X-Website: https://bencepo.github.io/spikespotter/
+## X-License: All Rights Reserved
+## SavedVariables: SpikeSpotterDB
+## IconTexture: Interface\Icons\Spell_Nature_TimeStop
+## AddonCompartmentFunc: SpikeSpotter_OnCompartmentClick
+
+Libs\LibStub\LibStub.lua
+Libs\BencepoUI\BencepoUI.lua
+SpikeSpotter.lua

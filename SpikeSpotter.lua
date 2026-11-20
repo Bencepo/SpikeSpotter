@@ -1,0 +1,340 @@
+-- SpikeSpotter
+-- Copyright (c) 2026 Bencepo. All rights reserved.
+--
+-- Finds the addons behind short FPS drops. Every frame it notes how long the frame took; when one
+-- takes much longer than usual, it reads the client's own addon profiler (C_AddOnProfiler, LastTime)
+-- and records which addons used that frame and which game events fired just before. The ranking
+-- and a copyable log are shown in a window of its own; the log is also kept in SpikeSpotterDB.
+
+local ADDON, ns = ...
+
+local VERSION = C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON, "Version") or ""
+if VERSION:find("@") then VERSION = "dev" end
+local BUG_URL = "https://github.com/Bencepo/SpikeSpotter/issues/new/choose"
+local PREFIX = "|cffff8a3dSpikeSpotter:|r "
+local ACCENT = { 1, 0.54, 0.24, 1 }
+
+local P = C_AddOnProfiler
+local M = Enum and Enum.AddOnProfilerMetric
+
+local LOG_MAX = 1000
+local EV_KEEP = 12
+local WARMUP = 120        -- frames after login before spikes count (loading)
+local LOADING_MS = 250    -- longer frames are loading screens, not spikes
+local ROWS = 10
+
+local DEFAULTS = { ms = 40, enabled = true, chat = false, spikes = 0, engine = 0 }
+
+local db
+local addons = {}               -- loaded addon names, without SpikeSpotter
+local prev, cur = {}, {}        -- LastTime per addon: previous and current frame
+local events, evPos = {}, 0
+local avg = 16
+local warm = 0
+local lastWasSpike = false
+local lastChat = 0
+local monitor, eventFrame, settingsWin, copyFrame, ticker
+local rows = {}
+
+---------------------------------------------------------------------------
+-- Measuring
+---------------------------------------------------------------------------
+
+local function Num(v)
+	if issecretvalue and issecretvalue(v) then return nil end
+	return type(v) == "number" and v or nil
+end
+
+local function LastTime(name)
+	local ok, v = pcall(P.GetAddOnMetric, name, M.LastTime)
+	return ok and Num(v) or 0
+end
+
+local function CollectAddons()
+	wipe(addons)
+	for i = 1, C_AddOns.GetNumAddOns() do
+		local name = C_AddOns.GetAddOnInfo(i)
+		if name and name ~= ADDON and C_AddOns.IsAddOnLoaded(i) then addons[#addons + 1] = name end
+	end
+end
+
+local function RecentEvents()
+	local out, seen = {}, {}
+	for k = 0, EV_KEEP - 1 do
+		local e = events[((evPos - k - 1) % EV_KEEP) + 1]
+		if e and not seen[e] then
+			seen[e] = true
+			out[#out + 1] = e
+		end
+	end
+	return table.concat(out, ", ")
+end
+
+local function Round(v) return math.floor(v * 10 + 0.5) / 10 end
+
+local function Record(frameMs)
+	-- The profiler's "last frame" may still be the frame before: the larger of both counts,
+	-- except right after a recorded spike, whose numbers were counted already.
+	local list, sum = {}, 0
+	for _, name in ipairs(addons) do
+		local t = cur[name] or 0
+		if not lastWasSpike then t = math.max(t, prev[name] or 0) end
+		if t >= 1 then
+			list[#list + 1] = { name = name, t = t }
+			sum = sum + t
+		end
+	end
+	table.sort(list, function(a, b) return a.t > b.t end)
+
+	db.spikes = db.spikes + 1
+	if sum < frameMs * 0.3 then db.engine = db.engine + 1 end
+	for _, e in ipairs(list) do
+		local s = db.byAddon[e.name]
+		if not s then
+			s = { n = 0, ms = 0, max = 0 }
+			db.byAddon[e.name] = s
+		end
+		s.n, s.ms, s.max = s.n + 1, s.ms + e.t, math.max(s.max, e.t)
+	end
+
+	local top = {}
+	for i = 1, math.min(8, #list) do top[#top + 1] = ("%s=%.1f"):format(list[i].name, list[i].t) end
+	db.log[#db.log + 1] = {
+		t = date("%Y-%m-%d %H:%M:%S"),
+		frame = Round(frameMs),
+		avg = Round(avg),
+		addons = Round(sum),
+		top = table.concat(top, " "),
+		events = RecentEvents(),
+		combat = InCombatLockdown() and 1 or 0,
+		zone = GetRealZoneText and GetRealZoneText() or "",
+	}
+	while #db.log > LOG_MAX do table.remove(db.log, 1) end
+
+	if db.chat and GetTime() - lastChat > 0.5 then
+		lastChat = GetTime()
+		local parts = {}
+		for i = 1, math.min(3, #list) do parts[#parts + 1] = ("%s %.0f ms"):format(list[i].name, list[i].t) end
+		print(PREFIX .. ("%.0f ms frame: %s"):format(frameMs, #parts > 0 and table.concat(parts, ", ") or "no addon (game)"))
+	end
+end
+
+local function OnUpdate(_, elapsed)
+	prev, cur = cur, prev
+	for _, name in ipairs(addons) do cur[name] = LastTime(name) end
+	local ms = elapsed * 1000
+	warm = warm + 1
+	local spike = warm > WARMUP and ms > db.ms and ms < LOADING_MS and (ms > avg * 2.5 or ms > db.ms * 2)
+	if spike then Record(ms) end
+	lastWasSpike = spike and true or false
+	avg = avg * 0.95 + math.min(ms, 100) * 0.05
+end
+
+local function OnEvent(_, e)
+	if e == "COMBAT_LOG_EVENT_UNFILTERED" or e == "UNIT_AURA" or e:find("^UNIT_POWER") then return end
+	evPos = evPos % EV_KEEP + 1
+	events[evPos] = e
+end
+
+local function Apply()
+	if not monitor then return end
+	if db.enabled then
+		CollectAddons()
+		warm = 0
+		monitor:SetScript("OnUpdate", OnUpdate)
+		eventFrame:RegisterAllEvents()
+	else
+		monitor:SetScript("OnUpdate", nil)
+		eventFrame:UnregisterAllEvents()
+	end
+end
+
+local function Reset()
+	db.spikes, db.engine, db.byAddon, db.log = 0, 0, {}, {}
+end
+
+---------------------------------------------------------------------------
+-- Copyable report
+---------------------------------------------------------------------------
+
+local function Ranking()
+	local list = {}
+	for name, s in pairs(db.byAddon) do list[#list + 1] = { name = name, s = s } end
+	table.sort(list, function(a, b) return a.s.ms > b.s.ms end)
+	return list
+end
+
+local function ReportText()
+	local lines = {}
+	local build = GetBuildInfo and select(1, GetBuildInfo()) or ""
+	lines[#lines + 1] = ("SpikeSpotter %s, client %s, %s"):format(VERSION, build, date("%Y-%m-%d %H:%M"))
+	lines[#lines + 1] = ("%d spikes over %d ms, %d without a notable addon share (game)"):format(db.spikes, db.ms, db.engine)
+	lines[#lines + 1] = ""
+	lines[#lines + 1] = "Addon: total ms / spikes / worst ms"
+	for i, e in ipairs(Ranking()) do
+		if i > 20 then break end
+		lines[#lines + 1] = ("%d. %s: %.0f / %d / %.0f"):format(i, e.name, e.s.ms, e.s.n, e.s.max)
+	end
+	lines[#lines + 1] = ""
+	lines[#lines + 1] = "Last spikes (time, frame ms, addon ms, combat, addons, events)"
+	for i = math.max(1, #db.log - 99), #db.log do
+		local r = db.log[i]
+		lines[#lines + 1] = ("%s | %s | %s | %s | %s | %s"):format(r.t, r.frame, r.addons, r.combat == 1 and "combat" or "-", r.top ~= "" and r.top or "-", r.events)
+	end
+	return table.concat(lines, "\n")
+end
+
+local function ShowCopy()
+	if not copyFrame then
+		local f = CreateFrame("Frame", "SpikeSpotterCopyFrame", UIParent, "BackdropTemplate")
+		f:SetSize(560, 360)
+		f:SetPoint("CENTER")
+		f:SetFrameStrata("FULLSCREEN_DIALOG")
+		f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		f:SetBackdropColor(0.059, 0.075, 0.094, 0.97)
+		f:SetBackdropBorderColor(ACCENT[1], ACCENT[2], ACCENT[3], 1)
+		f:EnableMouse(true)
+		f:SetMovable(true)
+		f:RegisterForDrag("LeftButton")
+		f:SetScript("OnDragStart", f.StartMoving)
+		f:SetScript("OnDragStop", f.StopMovingOrSizing)
+		tinsert(UISpecialFrames, "SpikeSpotterCopyFrame")
+		local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		title:SetPoint("TOPLEFT", 12, -10)
+		title:SetText("SpikeSpotter report: Ctrl+C to copy")
+		local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+		close:SetPoint("TOPRIGHT", 2, 2)
+		local scroll = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+		scroll:SetPoint("TOPLEFT", 12, -32)
+		scroll:SetPoint("BOTTOMRIGHT", -32, 12)
+		local edit = CreateFrame("EditBox", nil, scroll)
+		edit:SetMultiLine(true)
+		edit:SetAutoFocus(false)
+		edit:SetFontObject(ChatFontNormal)
+		edit:SetWidth(510)
+		edit:SetScript("OnEscapePressed", function() f:Hide() end)
+		scroll:SetScrollChild(edit)
+		f.edit = edit
+		copyFrame = f
+	end
+	copyFrame.edit:SetText(ReportText())
+	copyFrame:Show()
+	copyFrame.edit:SetFocus()
+	copyFrame.edit:HighlightText()
+end
+
+---------------------------------------------------------------------------
+-- Window
+---------------------------------------------------------------------------
+
+local function BuildSettings()
+	local UI = LibStub("BencepoUI-1.0")
+	settingsWin = UI:CreateWindow({
+		name = "SpikeSpotterFrame", title = "SpikeSpotter", subtitle = VERSION,
+		width = 520, height = 440, accent = ACCENT, db = db, posKey = "settingsPoint", bugUrl = BUG_URL,
+		onShow = function()
+			if ticker then ticker:Cancel() end
+			ticker = C_Timer.NewTicker(1, function() settingsWin:Refresh() end)
+		end,
+		onHide = function()
+			if ticker then ticker:Cancel() ticker = nil end
+		end,
+	})
+	local w = settingsWin
+	local X = 16
+	w:Header(X, -48, "Monitoring")
+	w:Check(X, -72, "Watch for spikes", "Off: SpikeSpotter does nothing at all. Turn it off when you are done.",
+		function() return db.enabled end, function(v) db.enabled = v and true or false Apply() end)
+	w:Check(X, -96, "Chat message per spike", "Prints the addons behind each spike to the chat as it happens.",
+		function() return db.chat end, function(v) db.chat = v and true or false end)
+	w:Slider(260, -72, "Spike threshold", 20, 150, 5, function() return db.ms end,
+		function(v) db.ms = v end, "A frame counts as a spike when it takes at least this long and much longer than usual.", 220,
+		function(v) return v .. " ms" end)
+
+	local reset = w:Button("Reset", 110, function() Reset() w:Refresh() end, "Clears the ranking and the log. Do this before a test.")
+	reset:SetPoint("TOPLEFT", X, -130)
+	local copy = w:Button("Copy report", 130, ShowCopy, "Ranking and the last 100 spikes as text, to paste into a bug report or a forum post.")
+	copy:SetPoint("LEFT", reset, "RIGHT", 8, 0)
+
+	w:Header(X, -172, "Addons behind the spikes")
+	local status = w:Text(X, -194, "", 488)
+	for _, h in ipairs({ { 0, "Addon" }, { 250, "total ms" }, { 340, "spikes" }, { 410, "worst ms" } }) do
+		w:Text(X + h[1], -216, "|cff8d97a5" .. h[2] .. "|r", 120)
+	end
+	for i = 1, ROWS do
+		local name = w:Text(X, -216 - i * 17, "", 300)
+		local total = w:Text(X + 250, -216 - i * 17, "", 80)
+		local count = w:Text(X + 340, -216 - i * 17, "", 60)
+		local worst = w:Text(X + 410, -216 - i * 17, "", 70)
+		rows[i] = { name, total, count, worst }
+	end
+	w:OnRefresh(function()
+		local list = Ranking()
+		status:SetText(("%d spikes recorded, %d of them without a notable addon share (the game itself).%s"):format(
+			db.spikes, db.engine, db.enabled and "" or " |cffff8a3dMonitoring is off.|r"))
+		for i, r in ipairs(rows) do
+			local e = list[i]
+			r[1]:SetText(e and (i .. ". " .. e.name) or "")
+			r[2]:SetText(e and ("%.0f"):format(e.s.ms) or "")
+			r[3]:SetText(e and tostring(e.s.n) or "")
+			r[4]:SetText(e and ("%.0f"):format(e.s.max) or "")
+		end
+		if not list[1] then rows[1][1]:SetText("|cff8d97a5Nothing yet. Play as usual: kill, loot, fight.|r") end
+	end)
+end
+
+local function ToggleSettings()
+	if not settingsWin then BuildSettings() end
+	settingsWin:Refresh()
+	settingsWin:Toggle()
+end
+
+function SpikeSpotter_OnCompartmentClick()
+	ToggleSettings()
+end
+
+local function RegisterSettings()
+	if not (Settings and Settings.RegisterVerticalLayoutCategory and Settings.RegisterAddOnCategory) then return end
+	local category, layout = Settings.RegisterVerticalLayoutCategory("SpikeSpotter")
+	if layout and CreateSettingsButtonInitializer then
+		layout:AddInitializer(CreateSettingsButtonInitializer("SpikeSpotter has its own window", "Open", function()
+			if SettingsPanel and SettingsPanel:IsShown() then HideUIPanel(SettingsPanel) end
+			if not settingsWin then BuildSettings() end
+			settingsWin:Refresh()
+			settingsWin:Show()
+		end, "The window can be dragged anywhere and stays open while you play.", true))
+	end
+	Settings.RegisterAddOnCategory(category)
+end
+
+SLASH_SPIKESPOTTER1 = "/spike"
+SLASH_SPIKESPOTTER2 = "/spikespotter"
+SlashCmdList.SPIKESPOTTER = ToggleSettings
+
+---------------------------------------------------------------------------
+-- Start
+---------------------------------------------------------------------------
+
+local boot = CreateFrame("Frame")
+boot:RegisterEvent("PLAYER_LOGIN")
+boot:SetScript("OnEvent", function()
+	SpikeSpotterDB = SpikeSpotterDB or {}
+	db = SpikeSpotterDB
+	for k, v in pairs(DEFAULTS) do
+		if db[k] == nil then db[k] = v end
+	end
+	db.byAddon = db.byAddon or {}
+	db.log = db.log or {}
+	db.quiet = nil
+	pcall(RegisterSettings)
+	if not (P and M and P.GetAddOnMetric and M.LastTime) then
+		print(PREFIX .. "this client has no addon profiler (C_AddOnProfiler), SpikeSpotter cannot measure.")
+		return
+	end
+	monitor = CreateFrame("Frame")
+	eventFrame = CreateFrame("Frame")
+	eventFrame:SetScript("OnEvent", OnEvent)
+	Apply()
+end)
+
+ns.ToggleSettings = ToggleSettings
