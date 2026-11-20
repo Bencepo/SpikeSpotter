@@ -1,25 +1,34 @@
 # SpikeSpotter
 
-Your game stutters for a split second when you kill a mob, loot or pull? SpikeSpotter finds the addon behind it. It watches the frame time, and whenever a frame takes much longer than usual it asks the game's own addon profiler which addons used that frame.
+**Find the addon behind the stutter.** Short FPS drops when you kill, loot or pull? SpikeSpotter asks the game's own addon profiler which addons used those frames and ranks them, with a copyable report.
 
-**Website:** https://bencepo.github.io/spikespotter/
+**Website and live demo:** https://bencepo.github.io/spikespotter/
 
-- **Ranking of the culprits.** Every addon that took part in a spike, with its total time, how often and its worst frame. The window refreshes live while you play.
-- **Game or addon?** Spikes where no addon took a notable share are counted apart: then the game itself is the cause, and disabling addons will not help.
-- **Context.** Each spike is logged with the game events that fired just before (loot window, quest log update, combat start ...), so you see *when* an addon gets expensive.
-- **Copy report.** Ranking and the last 100 spikes as text, to paste into a bug report for the addon at fault or a forum post.
-- **Chat message per spike** (optional) and an adjustable spike threshold.
-- **Off when you are done.** One switch turns all measuring off; then SpikeSpotter costs nothing.
+## What it does
 
-**How to use it:** open the window (`/spike` or the addon menu at the minimap), click Reset, play a few minutes the way the stutter happens, then look at the ranking. Disable the top addon and test again.
+- **Catches the stutter.** A frame that takes much longer than usual counts as a spike; loading screens are left out.
+- **Ranking of the culprits.** Every addon in a spike, with total time, count and its worst frame.
+- **Game or addon?.** Spikes without a notable addon share count as the game's own: then disabling addons will not help.
+- **Context.** The game events just before each spike, so you see when an addon gets expensive.
+- **Copy report.** Ranking and the last 100 spikes as text for a bug report or forum post.
+- **Off when you are done.** One switch stops all measuring; then it costs nothing.
+
+## How to use
+
+- `/spike` or the addon menu at the minimap opens the window.
+- Click Reset, play a few minutes the way the stutter happens, read the ranking. Disable the top addon and test again.
+
+## Good to know
+
+- SpikeSpotter only names addons that used the spike frames. Whether that addon is broken or just busy, its author has to judge.
 
 ## Feedback and bug reports
 
 Found a bug or have an idea? [Open an issue](https://github.com/Bencepo/SpikeSpotter/issues/new/choose), it takes a minute. No GitHub account? Comment on [CurseForge](https://www.curseforge.com/wow/addons/spikespotter#comments). Every report gets read.
 
-## More addons by Bencepo
+## More from Bencepo
 
-All addons, live demos and the web pages: **https://bencepo.github.io**
+All addons, live demos and guides: **https://bencepo.github.io**
 
 Like the addons? Support them on Ko-fi: **https://ko-fi.com/bencepo**
 
