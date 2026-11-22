@@ -132,6 +132,8 @@ end
 
 local function OnEvent(_, e)
 	if e == "COMBAT_LOG_EVENT_UNFILTERED" or e == "UNIT_AURA" or e:find("^UNIT_POWER") then return end
+	-- an addon loaded on demand later (e.g. with its window): measure it from now on
+	if e == "ADDON_LOADED" then CollectAddons() end
 	evPos = evPos % EV_KEEP + 1
 	events[evPos] = e
 end

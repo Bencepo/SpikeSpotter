@@ -4,7 +4,7 @@ SpikeSpotter: finds the addons behind short FPS drops in WoW Forever (Lua 5.1). 
 
 ## How it measures
 
-- `OnUpdate` every frame: reads `C_AddOnProfiler.GetAddOnMetric(name, Enum.AddOnProfilerMetric.LastTime)` (ms) for every loaded addon except itself, keeps the previous and current frame.
+- `OnUpdate` every frame: reads `C_AddOnProfiler.GetAddOnMetric(name, Enum.AddOnProfilerMetric.LastTime)` (ms) for every loaded addon except itself, keeps the previous and current frame. The addon list is collected again on every `ADDON_LOADED`, so addons loaded on demand are measured too.
 - A frame is a spike when it is over the threshold (`db.ms`, default 40), under 250 ms (longer = loading screen), after a 120-frame warm-up, and over 2.5x the running average or 2x the threshold.
 - It is not certain whether `LastTime` at detection is the spike frame or the one before, so the larger of both counts, except right after a recorded spike.
 - Spikes where addons together took under 30% of the frame count as the game's own (`db.engine`).
@@ -24,6 +24,7 @@ SpikeSpotter: finds the addons behind short FPS drops in WoW Forever (Lua 5.1). 
 
 ## Rules
 
-- UI texts in English. Window built with BencepoUI (`Libs/BencepoUI`, bump its LibStub minor on changes).
+- English only: UI texts and descriptions, no translations, no `Notes-xxXX` in the .toc. Buttons instead of chat commands.
+- Window built with BencepoUI (`Libs/BencepoUI`), shared by all Bencepo addons. It must be the same file in each addon (canonical: minor 4, Nov 2026). Change it in one repo, bump the LibStub minor, copy it to the others: two different copies with the same minor make the result depend on load order.
 - CI runs luacheck and LuaLS with the WoW API annotations; LuaLS must report zero diagnostics or the release stops.
 - Release: new version heading at the top of `CHANGELOG.md`, push to `main`; the workflow uploads to CurseForge and Wago (secrets `CF_API_KEY`, `WAGO_API_TOKEN`). Test in game before pushing.
