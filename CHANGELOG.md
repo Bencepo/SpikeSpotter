@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.3
 
 - Lower profiling overhead: the per-frame profiler reads metrics directly into indexed arrays without per-frame `pcall` or string hashing, `RegisterAllEvents` filters noisy events via a lookup table instead of pattern matching, and `ADDON_LOADED` appends newly loaded addons directly instead of rescanning the full addon list.
 - Fixed: loading-screen frames no longer carry their huge profiler numbers into the next normal frame and skew the first post-load spike.
