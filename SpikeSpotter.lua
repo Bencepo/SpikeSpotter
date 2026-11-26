@@ -27,34 +27,54 @@ local DEFAULTS = { ms = 40, enabled = true, chat = false, spikes = 0, engine = 0
 
 local db
 local addons = {}               -- loaded addon names, without SpikeSpotter
-local prev, cur = {}, {}        -- LastTime per addon: previous and current frame
+local addonSet = {}             -- [name] = true for O(1) ADDON_LOADED append
+local prev, cur = {}, {}        -- LastTime per addon index: previous and current frame
 local events, evPos = {}, 0
 local avg = 16
 local warm = 0
 local lastWasSpike = false
 local lastChat = 0
-local monitor, eventFrame, settingsWin, copyFrame, ticker
+local monitor, eventFrame, settingsWin, copyFrame
+local refreshQueued = false
 local rows = {}
+
+local GetAddOnMetric
+local LAST_TIME
+local issecret = issecretvalue
+
+-- Events that fire constantly in combat and carry no useful spike context.
+local IGNORED = {
+	COMBAT_LOG_EVENT_UNFILTERED = true,
+	UNIT_AURA = true,
+	UNIT_POWER_UPDATE = true,
+	UNIT_POWER_FREQUENT = true,
+	UNIT_POWER_BAR_TIMER_UPDATE = true,
+	UNIT_POWER_POINT_CHARGE = true,
+}
 
 ---------------------------------------------------------------------------
 -- Measuring
 ---------------------------------------------------------------------------
 
-local function Num(v)
-	if issecretvalue and issecretvalue(v) then return nil end
-	return type(v) == "number" and v or nil
-end
-
-local function LastTime(name)
-	local ok, v = pcall(P.GetAddOnMetric, name, M.LastTime)
-	return ok and Num(v) or 0
+local function AddAddon(name)
+	if not name or name == ADDON or addonSet[name] then return end
+	if not (GetAddOnMetric and LAST_TIME) then return end
+	-- Validate once so OnUpdate can read the metric directly without pcall overhead.
+	if not pcall(GetAddOnMetric, name, LAST_TIME) then return end
+	addonSet[name] = true
+	local idx = #addons + 1
+	addons[idx] = name
+	prev[idx], cur[idx] = 0, 0
 end
 
 local function CollectAddons()
 	wipe(addons)
+	wipe(addonSet)
+	wipe(prev)
+	wipe(cur)
 	for i = 1, C_AddOns.GetNumAddOns() do
 		local name = C_AddOns.GetAddOnInfo(i)
-		if name and name ~= ADDON and C_AddOns.IsAddOnLoaded(i) then addons[#addons + 1] = name end
+		if name and name ~= ADDON and C_AddOns.IsAddOnLoaded(i) then AddAddon(name) end
 	end
 end
 
@@ -72,23 +92,41 @@ end
 
 local function Round(v) return math.floor(v * 10 + 0.5) / 10 end
 
+local function SortByT(a, b) return a.t > b.t end
+local function SortByMs(a, b) return a.s.ms > b.s.ms end
+
+local function FlushRefresh()
+	refreshQueued = false
+	if settingsWin and settingsWin:IsShown() then settingsWin:Refresh() end
+end
+
+local function ScheduleRefresh()
+	if refreshQueued or not (settingsWin and settingsWin:IsShown()) then return end
+	refreshQueued = true
+	C_Timer.After(0.5, FlushRefresh)
+end
+
 local function Record(frameMs)
 	-- The profiler's "last frame" may still be the frame before: the larger of both counts,
-	-- except right after a recorded spike, whose numbers were counted already.
+	-- except right after a recorded spike or loading screen, whose numbers must not carry over.
 	local list, sum = {}, 0
-	for _, name in ipairs(addons) do
-		local t = cur[name] or 0
-		if not lastWasSpike then t = math.max(t, prev[name] or 0) end
+	for i = 1, #addons do
+		local t = cur[i] or 0
+		if not lastWasSpike then
+			local p = prev[i] or 0
+			if p > t then t = p end
+		end
 		if t >= 1 then
-			list[#list + 1] = { name = name, t = t }
+			list[#list + 1] = { name = addons[i], t = t }
 			sum = sum + t
 		end
 	end
-	table.sort(list, function(a, b) return a.t > b.t end)
+	table.sort(list, SortByT)
 
 	db.spikes = db.spikes + 1
 	if sum < frameMs * 0.3 then db.engine = db.engine + 1 end
-	for _, e in ipairs(list) do
+	for i = 1, #list do
+		local e = list[i]
 		local s = db.byAddon[e.name]
 		if not s then
 			s = { n = 0, ms = 0, max = 0 }
@@ -99,7 +137,8 @@ local function Record(frameMs)
 
 	local top = {}
 	for i = 1, math.min(8, #list) do top[#top + 1] = ("%s=%.1f"):format(list[i].name, list[i].t) end
-	db.log[#db.log + 1] = {
+	local log = db.log
+	log[#log + 1] = {
 		t = date("%Y-%m-%d %H:%M:%S"),
 		frame = Round(frameMs),
 		avg = Round(avg),
@@ -109,7 +148,12 @@ local function Record(frameMs)
 		combat = InCombatLockdown() and 1 or 0,
 		zone = GetRealZoneText and GetRealZoneText() or "",
 	}
-	while #db.log > LOG_MAX do table.remove(db.log, 1) end
+	-- Trim in batches so individual spikes do not pay an O(N) shift on every entry.
+	if #log > LOG_MAX + 100 then
+		local trimmed, start = {}, #log - LOG_MAX + 1
+		for i = start, #log do trimmed[#trimmed + 1] = log[i] end
+		db.log = trimmed
+	end
 
 	if db.chat and GetTime() - lastChat > 0.5 then
 		lastChat = GetTime()
@@ -117,24 +161,39 @@ local function Record(frameMs)
 		for i = 1, math.min(3, #list) do parts[#parts + 1] = ("%s %.0f ms"):format(list[i].name, list[i].t) end
 		print(PREFIX .. ("%.0f ms frame: %s"):format(frameMs, #parts > 0 and table.concat(parts, ", ") or "no addon (game)"))
 	end
+
+	ScheduleRefresh()
 end
 
 local function OnUpdate(_, elapsed)
 	prev, cur = cur, prev
-	for _, name in ipairs(addons) do cur[name] = LastTime(name) end
+	for i = 1, #addons do
+		local v = GetAddOnMetric(addons[i], LAST_TIME)
+		cur[i] = (type(v) == "number" and (not issecret or not issecret(v))) and v or 0
+	end
 	local ms = elapsed * 1000
 	warm = warm + 1
-	local spike = warm > WARMUP and ms > db.ms and ms < LOADING_MS and (ms > avg * 2.5 or ms > db.ms * 2)
-	if spike then Record(ms) end
-	lastWasSpike = spike and true or false
+	if ms >= LOADING_MS then
+		-- Prevent huge loading-screen metric values in cur from carrying into the next frame via prev.
+		lastWasSpike = true
+	else
+		local spike = warm > WARMUP and ms > db.ms and (ms > avg * 2.5 or ms > db.ms * 2)
+		if spike then Record(ms) end
+		lastWasSpike = spike and true or false
+	end
 	avg = avg * 0.95 + math.min(ms, 100) * 0.05
 end
 
-local function OnEvent(_, e)
-	if e == "COMBAT_LOG_EVENT_UNFILTERED" or e == "UNIT_AURA" or e:find("^UNIT_POWER") then return end
+local function OnEvent(_, e, arg1)
+	if IGNORED[e] then return end
+	if e:byte(1) == 85 and e:find("UNIT_POWER", 1, true) == 1 then
+		IGNORED[e] = true
+		return
+	end
 	-- an addon loaded on demand later (e.g. with its window): measure it from now on
-	if e == "ADDON_LOADED" then CollectAddons() end
-	evPos = evPos % EV_KEEP + 1
+	if e == "ADDON_LOADED" and arg1 then AddAddon(arg1) end
+	evPos = evPos + 1
+	if evPos > EV_KEEP then evPos = 1 end
 	events[evPos] = e
 end
 
@@ -143,6 +202,7 @@ local function Apply()
 	if db.enabled then
 		CollectAddons()
 		warm = 0
+		lastWasSpike = false
 		monitor:SetScript("OnUpdate", OnUpdate)
 		eventFrame:RegisterAllEvents()
 	else
@@ -162,7 +222,7 @@ end
 local function Ranking()
 	local list = {}
 	for name, s in pairs(db.byAddon) do list[#list + 1] = { name = name, s = s } end
-	table.sort(list, function(a, b) return a.s.ms > b.s.ms end)
+	table.sort(list, SortByMs)
 	return list
 end
 
@@ -192,6 +252,8 @@ local function ShowCopy()
 		f:SetSize(560, 360)
 		f:SetPoint("CENTER")
 		f:SetFrameStrata("FULLSCREEN_DIALOG")
+		f:SetToplevel(true)
+		f:SetClampedToScreen(true)
 		f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
 		f:SetBackdropColor(0.059, 0.075, 0.094, 0.97)
 		f:SetBackdropBorderColor(ACCENT[1], ACCENT[2], ACCENT[3], 1)
@@ -234,13 +296,6 @@ local function BuildSettings()
 	settingsWin = UI:CreateWindow({
 		name = "SpikeSpotterFrame", title = "SpikeSpotter", subtitle = VERSION,
 		width = 520, height = 440, accent = ACCENT, db = db, posKey = "settingsPoint", bugUrl = BUG_URL,
-		onShow = function()
-			if ticker then ticker:Cancel() end
-			ticker = C_Timer.NewTicker(1, function() settingsWin:Refresh() end)
-		end,
-		onHide = function()
-			if ticker then ticker:Cancel() ticker = nil end
-		end,
 	})
 	local w = settingsWin
 	local X = 16
@@ -286,8 +341,8 @@ local function BuildSettings()
 end
 
 local function ToggleSettings()
+	if not db then return end
 	if not settingsWin then BuildSettings() end
-	settingsWin:Refresh()
 	settingsWin:Toggle()
 end
 
@@ -301,8 +356,8 @@ local function RegisterSettings()
 	if layout and CreateSettingsButtonInitializer then
 		layout:AddInitializer(CreateSettingsButtonInitializer("SpikeSpotter has its own window", "Open", function()
 			if SettingsPanel and SettingsPanel:IsShown() then HideUIPanel(SettingsPanel) end
+			if not db then return end
 			if not settingsWin then BuildSettings() end
-			settingsWin:Refresh()
 			settingsWin:Show()
 		end, "The window can be dragged anywhere and stays open while you play.", true))
 	end
@@ -319,7 +374,8 @@ SlashCmdList.SPIKESPOTTER = ToggleSettings
 
 local boot = CreateFrame("Frame")
 boot:RegisterEvent("PLAYER_LOGIN")
-boot:SetScript("OnEvent", function()
+boot:SetScript("OnEvent", function(self)
+	self:UnregisterEvent("PLAYER_LOGIN")
 	SpikeSpotterDB = SpikeSpotterDB or {}
 	db = SpikeSpotterDB
 	for k, v in pairs(DEFAULTS) do
@@ -333,6 +389,9 @@ boot:SetScript("OnEvent", function()
 		print(PREFIX .. "this client has no addon profiler (C_AddOnProfiler), SpikeSpotter cannot measure.")
 		return
 	end
+	GetAddOnMetric = P.GetAddOnMetric
+	LAST_TIME = M.LastTime
+	issecret = issecretvalue
 	monitor = CreateFrame("Frame")
 	eventFrame = CreateFrame("Frame")
 	eventFrame:SetScript("OnEvent", OnEvent)

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Lower profiling overhead: the per-frame profiler reads metrics directly into indexed arrays without per-frame `pcall` or string hashing, `RegisterAllEvents` filters noisy events via a lookup table instead of pattern matching, and `ADDON_LOADED` appends newly loaded addons directly instead of rescanning the full addon list.
+- Fixed: loading-screen frames no longer carry their huge profiler numbers into the next normal frame and skew the first post-load spike.
+- The window now refreshes when new spikes arrive instead of re-sorting every second while idle, log trimming runs in batches, and the report copy dialog stays clamped to the screen.
+- Shared settings window updated to BencepoUI 5.
+
 ## 1.0.2
 
 - Addons loaded on demand (when their window opens, for example) are measured too: the list of addons is updated whenever one loads. Before, only the addons loaded at login counted.
