@@ -7,6 +7,10 @@
 -- and a copyable log are shown in a window of its own; the log is also kept in SpikeSpotterDB.
 
 local ADDON, ns = ...
+local pairs, ipairs, tostring, pcall, wipe = pairs, ipairs, tostring, pcall, wipe
+local max = math.max
+local tconcat, tsort = table.concat, table.sort
+local format, date = format, date
 
 local VERSION = C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON, "Version") or ""
 if VERSION:find("@") then VERSION = "dev" end
@@ -219,32 +223,48 @@ end
 -- Copyable report
 ---------------------------------------------------------------------------
 
+local rankList, rankPool = {}, {}
+
 local function Ranking()
-	local list = {}
-	for name, s in pairs(db.byAddon) do list[#list + 1] = { name = name, s = s } end
-	table.sort(list, SortByMs)
-	return list
+	wipe(rankList)
+	local n = 0
+	for name, s in pairs(db.byAddon) do
+		n = n + 1
+		local e = rankPool[n]
+		if not e then
+			e = {}
+			rankPool[n] = e
+		end
+		e.name, e.s = name, s
+		rankList[n] = e
+	end
+	tsort(rankList, SortByMs)
+	return rankList
 end
 
+local reportLines = {}
+
 local function ReportText()
-	local lines = {}
-	local build = GetBuildInfo and select(1, GetBuildInfo()) or ""
-	lines[#lines + 1] = ("SpikeSpotter %s, client %s, %s"):format(VERSION, build, date("%Y-%m-%d %H:%M"))
-	lines[#lines + 1] = ("%d spikes over %d ms, %d without a notable addon share (game)"):format(db.spikes, db.ms, db.engine)
-	lines[#lines + 1] = ""
-	lines[#lines + 1] = "Addon: total ms / spikes / worst ms"
+	wipe(reportLines)
+	local build = GetBuildInfo and (GetBuildInfo()) or ""
+	reportLines[#reportLines + 1] = format("SpikeSpotter %s, client %s, %s", VERSION, build, date("%Y-%m-%d %H:%M"))
+	reportLines[#reportLines + 1] = format("%d spikes over %d ms, %d without a notable addon share (game)", db.spikes, db.ms, db.engine)
+	reportLines[#reportLines + 1] = ""
+	reportLines[#reportLines + 1] = "Addon: total ms / spikes / worst ms"
 	for i, e in ipairs(Ranking()) do
 		if i > 20 then break end
-		lines[#lines + 1] = ("%d. %s: %.0f / %d / %.0f"):format(i, e.name, e.s.ms, e.s.n, e.s.max)
+		reportLines[#reportLines + 1] = format("%d. %s: %.0f / %d / %.0f", i, e.name, e.s.ms, e.s.n, e.s.max)
 	end
-	lines[#lines + 1] = ""
-	lines[#lines + 1] = "Last spikes (time, frame ms, addon ms, combat, addons, events)"
-	for i = math.max(1, #db.log - 99), #db.log do
+	reportLines[#reportLines + 1] = ""
+	reportLines[#reportLines + 1] = "Last spikes (time, frame ms, addon ms, combat, addons, events)"
+	for i = max(1, #db.log - 99), #db.log do
 		local r = db.log[i]
-		lines[#lines + 1] = ("%s | %s | %s | %s | %s | %s"):format(r.t, r.frame, r.addons, r.combat == 1 and "combat" or "-", r.top ~= "" and r.top or "-", r.events)
+		reportLines[#reportLines + 1] = format("%s | %s | %s | %s | %s | %s", r.t, r.frame, r.addons, r.combat == 1 and "combat" or "-", r.top ~= "" and r.top or "-", r.events)
 	end
-	return table.concat(lines, "\n")
+	return tconcat(reportLines, "\n")
 end
+
+local WHITE = "Interface\\Buttons\\WHITE8x8"
 
 local function ShowCopy()
 	if not copyFrame then
@@ -254,7 +274,7 @@ local function ShowCopy()
 		f:SetFrameStrata("FULLSCREEN_DIALOG")
 		f:SetToplevel(true)
 		f:SetClampedToScreen(true)
-		f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		f:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 })
 		f:SetBackdropColor(0.059, 0.075, 0.094, 0.97)
 		f:SetBackdropBorderColor(ACCENT[1], ACCENT[2], ACCENT[3], 1)
 		f:EnableMouse(true)
@@ -291,6 +311,8 @@ end
 -- Window
 ---------------------------------------------------------------------------
 
+local COLUMNS = { { 0, "Addon" }, { 250, "total ms" }, { 340, "spikes" }, { 410, "worst ms" } }
+
 local function BuildSettings()
 	local UI = LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
@@ -308,42 +330,47 @@ local function BuildSettings()
 		function(v) db.ms = v end, "A frame counts as a spike when it takes at least this long and much longer than usual.", 220,
 		function(v) return v .. " ms" end)
 
-	local reset = w:Button("Reset", 110, function() Reset() w:Refresh() end, "Clears the ranking and the log. Do this before a test.")
+	local reset = w:Button("Reset", 110, Reset, "Clears the ranking and the log. Do this before a test.")
 	reset:SetPoint("TOPLEFT", X, -130)
 	local copy = w:Button("Copy report", 130, ShowCopy, "Ranking and the last 100 spikes as text, to paste into a bug report or a forum post.")
 	copy:SetPoint("LEFT", reset, "RIGHT", 8, 0)
 
 	w:Header(X, -172, "Addons behind the spikes")
 	local status = w:Text(X, -194, "", 488)
-	for _, h in ipairs({ { 0, "Addon" }, { 250, "total ms" }, { 340, "spikes" }, { 410, "worst ms" } }) do
+	for _, h in ipairs(COLUMNS) do
 		w:Text(X + h[1], -216, "|cff8d97a5" .. h[2] .. "|r", 120)
 	end
 	for i = 1, ROWS do
-		local name = w:Text(X, -216 - i * 17, "", 300)
-		local total = w:Text(X + 250, -216 - i * 17, "", 80)
-		local count = w:Text(X + 340, -216 - i * 17, "", 60)
-		local worst = w:Text(X + 410, -216 - i * 17, "", 70)
+		local y = -216 - i * 17
+		local name = w:Text(X, y, "", 300)
+		local total = w:Text(X + 250, y, "", 80)
+		local count = w:Text(X + 340, y, "", 60)
+		local worst = w:Text(X + 410, y, "", 70)
 		rows[i] = { name, total, count, worst }
 	end
 	w:OnRefresh(function()
 		local list = Ranking()
-		status:SetText(("%d spikes recorded, %d of them without a notable addon share (the game itself).%s"):format(
+		status:SetText(format("%d spikes recorded, %d of them without a notable addon share (the game itself).%s",
 			db.spikes, db.engine, db.enabled and "" or " |cffff8a3dMonitoring is off.|r"))
 		for i, r in ipairs(rows) do
 			local e = list[i]
 			r[1]:SetText(e and (i .. ". " .. e.name) or "")
-			r[2]:SetText(e and ("%.0f"):format(e.s.ms) or "")
+			r[2]:SetText(e and format("%.0f", e.s.ms) or "")
 			r[3]:SetText(e and tostring(e.s.n) or "")
-			r[4]:SetText(e and ("%.0f"):format(e.s.max) or "")
+			r[4]:SetText(e and format("%.0f", e.s.max) or "")
 		end
 		if not list[1] then rows[1][1]:SetText("|cff8d97a5Nothing yet. Play as usual: kill, loot, fight.|r") end
 	end)
 end
 
+local function EnsureSettings()
+	if not settingsWin then BuildSettings() end
+	return settingsWin
+end
+
 local function ToggleSettings()
 	if not db then return end
-	if not settingsWin then BuildSettings() end
-	settingsWin:Toggle()
+	EnsureSettings():Toggle()
 end
 
 function SpikeSpotter_OnCompartmentClick()
@@ -357,8 +384,7 @@ local function RegisterSettings()
 		layout:AddInitializer(CreateSettingsButtonInitializer("SpikeSpotter has its own window", "Open", function()
 			if SettingsPanel and SettingsPanel:IsShown() then HideUIPanel(SettingsPanel) end
 			if not db then return end
-			if not settingsWin then BuildSettings() end
-			settingsWin:Show()
+			EnsureSettings():Show()
 		end, "The window can be dragged anywhere and stays open while you play.", true))
 	end
 	Settings.RegisterAddOnCategory(category)
