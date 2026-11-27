@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Settings window: "More from Bencepo" button in the footer links to all Bencepo addons (BencepoUI 6).
+
 ## 1.0.3
 
 - Lower profiling overhead: the per-frame profiler reads metrics directly into indexed arrays without per-frame `pcall` or string hashing, `RegisterAllEvents` filters noisy events via a lookup table instead of pattern matching, and `ADDON_LOADED` appends newly loaded addons directly instead of rescanning the full addon list.
