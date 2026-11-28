@@ -27,7 +27,7 @@ local WARMUP = 120        -- frames after login before spikes count (loading)
 local LOADING_MS = 250    -- longer frames are loading screens, not spikes
 local ROWS = 10
 
-local DEFAULTS = { ms = 40, enabled = true, chat = false, spikes = 0, engine = 0 }
+local DEFAULTS = { ms = 40, enabled = true, chat = false, showMinimap = true, spikes = 0, engine = 0 }
 
 local db
 local addons = {}               -- loaded addon names, without SpikeSpotter
@@ -38,7 +38,7 @@ local avg = 16
 local warm = 0
 local lastWasSpike = false
 local lastChat = 0
-local monitor, eventFrame, settingsWin, copyFrame
+local monitor, eventFrame, settingsWin, copyFrame, LDBIcon
 local refreshQueued = false
 local rows = {}
 
@@ -313,6 +313,12 @@ end
 
 local COLUMNS = { { 0, "Addon" }, { 250, "total ms" }, { 340, "spikes" }, { 410, "worst ms" } }
 
+local function ApplyMinimap()
+	if not LDBIcon then return end
+	db.minimap.hide = not db.showMinimap
+	if db.showMinimap then LDBIcon:Show(ADDON) else LDBIcon:Hide(ADDON) end
+end
+
 local function BuildSettings()
 	local UI = LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
@@ -326,22 +332,24 @@ local function BuildSettings()
 		function() return db.enabled end, function(v) db.enabled = v and true or false Apply() end)
 	w:Check(X, -96, "Chat message per spike", "Prints the addons behind each spike to the chat as it happens.",
 		function() return db.chat end, function(v) db.chat = v and true or false end)
+	w:Check(X, -120, "Minimap button", "Show the SpikeSpotter button at the minimap.",
+		function() return db.showMinimap end, function(v) db.showMinimap = v and true or false ApplyMinimap() end)
 	w:Slider(260, -72, "Spike threshold", 20, 150, 5, function() return db.ms end,
 		function(v) db.ms = v end, "A frame counts as a spike when it takes at least this long and much longer than usual.", 220,
 		function(v) return v .. " ms" end)
 
 	local reset = w:Button("Reset", 110, Reset, "Clears the ranking and the log. Do this before a test.")
-	reset:SetPoint("TOPLEFT", X, -130)
+	reset:SetPoint("TOPLEFT", X, -154)
 	local copy = w:Button("Copy report", 130, ShowCopy, "Ranking and the last 100 spikes as text, to paste into a bug report or a forum post.")
 	copy:SetPoint("LEFT", reset, "RIGHT", 8, 0)
 
-	w:Header(X, -172, "Addons behind the spikes")
-	local status = w:Text(X, -194, "", 488)
+	w:Header(X, -196, "Addons behind the spikes")
+	local status = w:Text(X, -218, "", 488)
 	for _, h in ipairs(COLUMNS) do
-		w:Text(X + h[1], -216, "|cff8d97a5" .. h[2] .. "|r", 120)
+		w:Text(X + h[1], -240, "|cff8d97a5" .. h[2] .. "|r", 120)
 	end
 	for i = 1, ROWS do
-		local y = -216 - i * 17
+		local y = -240 - i * 17
 		local name = w:Text(X, y, "", 300)
 		local total = w:Text(X + 250, y, "", 80)
 		local count = w:Text(X + 340, y, "", 60)
@@ -377,6 +385,26 @@ function SpikeSpotter_OnCompartmentClick()
 	ToggleSettings()
 end
 
+local function RegisterMinimap()
+	local LDB = LibStub("LibDataBroker-1.1", true)
+	LDBIcon = LibStub("LibDBIcon-1.0", true)
+	if not (LDB and LDBIcon) then return end
+	local obj = LDB:NewDataObject(ADDON, {
+		type = "launcher",
+		text = ADDON,
+		icon = "Interface\\AddOns\\SpikeSpotter\\Icons\\minimap",
+		OnClick = function(_, button)
+			if button == "LeftButton" then SpikeSpotter_OnCompartmentClick() end
+		end,
+		OnTooltipShow = function(tt)
+			tt:AddLine(ADDON)
+			tt:AddLine("|cffffffffLeft-click:|r settings", 0.8, 0.8, 0.8)
+		end,
+	})
+	db.minimap.hide = not db.showMinimap
+	LDBIcon:Register(ADDON, obj, db.minimap)
+end
+
 local function RegisterSettings()
 	if not (Settings and Settings.RegisterVerticalLayoutCategory and Settings.RegisterAddOnCategory) then return end
 	local category, layout = Settings.RegisterVerticalLayoutCategory("SpikeSpotter")
@@ -409,7 +437,9 @@ boot:SetScript("OnEvent", function(self)
 	end
 	db.byAddon = db.byAddon or {}
 	db.log = db.log or {}
+	db.minimap = db.minimap or {}
 	db.quiet = nil
+	RegisterMinimap()
 	pcall(RegisterSettings)
 	if not (P and M and P.GetAddOnMetric and M.LastTime) then
 		print(PREFIX .. "this client has no addon profiler (C_AddOnProfiler), SpikeSpotter cannot measure.")
